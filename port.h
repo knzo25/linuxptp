@@ -275,7 +275,7 @@ int port_fault_fd(struct port *port);
  * @param log_seconds The exponential factor for the timer.
  * @return Zero on success, non-zero otherwise.
  */
-int set_tmo_log(int fd, unsigned int scale, int log_seconds);
+int set_tmo_log(int fd, unsigned int scale, int log_seconds, int time_offset_ms);
 
 /**
  * Utility function for setting a file descriptor timer.

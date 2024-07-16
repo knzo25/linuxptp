@@ -24,6 +24,8 @@
 #include <unistd.h>
 #include <sys/queue.h>
 #include <net/if.h>
+#include <stdio.h>
+#include <time.h>
 
 #include "bmc.h"
 #include "clock.h"
@@ -232,7 +234,7 @@ struct fdarray *port_fda(struct port *port)
 	return &port->fda;
 }
 
-int set_tmo_log(int fd, unsigned int scale, int log_seconds)
+int set_tmo_log(int fd, unsigned int scale, int log_seconds, int offset_ms)
 {
 	struct itimerspec tmo = {
 		{0, 0}, {0, 0}
@@ -253,6 +255,25 @@ int set_tmo_log(int fd, unsigned int scale, int log_seconds)
 	} else
 		tmo.it_value.tv_sec = scale * (1 << log_seconds);
 
+	// Hack to make multiple instances synchronized !
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+
+	int expected_ms = offset_ms;
+	//uint64_t now_ns = now.tv_sec * NS_PER_SEC + now.tv_nsec;
+	//uint64_t next_ns = now_ns + tmo.it_value.tv_sec * NS_PER_SEC + tmo.it_value.tv_nsec;
+
+	int64_t current_offset = now.tv_nsec;
+	if (current_offset > 1000000 * expected_ms) {
+		tmo.it_value.tv_sec--;
+		tmo.it_value.tv_nsec = NS_PER_SEC - now.tv_nsec + 1000000 * expected_ms;
+	} else {
+		tmo.it_value.tv_nsec = NS_PER_SEC - now.tv_nsec + 1000000 * expected_ms;
+	}
+
+	pr_debug("%d: set_tmo_log. sec=%lu nsec=%lu", fd, tmo.it_value.tv_sec,
+		 tmo.it_value.tv_nsec);
+
 	return timerfd_settime(fd, 0, &tmo, NULL);
 }
 
@@ -263,6 +284,10 @@ int set_tmo_lin(int fd, int seconds)
 	};
 
 	tmo.it_value.tv_sec = seconds;
+
+	pr_debug("%d: set_tmo_lin. sec=%lu nsec=%lu", fd, tmo.it_value.tv_sec,
+		 tmo.it_value.tv_nsec);
+
 	return timerfd_settime(fd, 0, &tmo, NULL);
 }
 
@@ -286,17 +311,24 @@ int set_tmo_random(int fd, int min, int span, int log_seconds)
 	tmo.it_value.tv_sec = value_ns / NS_PER_SEC;
 	tmo.it_value.tv_nsec = value_ns % NS_PER_SEC;
 
+	pr_debug("%d: set_tmo_random. sec=%lu nsec=%lu", fd, tmo.it_value.tv_sec,
+		 tmo.it_value.tv_nsec);
+
 	return timerfd_settime(fd, 0, &tmo, NULL);
 }
 
 int port_set_fault_timer_log(struct port *port,
 			     unsigned int scale, int log_seconds)
 {
-	return set_tmo_log(port->fault_fd, scale, log_seconds);
+	pr_debug("port_set_fault_timer_log");
+
+	return set_tmo_log(port->fault_fd, scale, log_seconds, port->time_offset_ms);
 }
 
 int port_set_fault_timer_lin(struct port *port, int seconds)
 {
+	pr_debug("port_set_fault_timer_lin");
+	
 	return set_tmo_lin(port->fault_fd, seconds);
 }
 
@@ -1286,35 +1318,41 @@ int port_set_delay_tmo(struct port *p)
 	switch (p->delayMechanism) {
 	case DM_COMMON_P2P:
 	case DM_P2P:
+		pr_debug("port_set_delay_tmo: log");
 		return set_tmo_log(p->fda.fd[FD_DELAY_TIMER], 1,
-				   p->logPdelayReqInterval);
+				   p->logPdelayReqInterval, p->time_offset_ms);
 	default:
 		break;
 	}
+	pr_debug("port_set_delay_tmo: random");
 	return set_tmo_random(p->fda.fd[FD_DELAY_TIMER], 0, 2,
 			      p->logMinDelayReqInterval);
 }
 
 static int port_set_manno_tmo(struct port *p)
 {
-	return set_tmo_log(p->fda.fd[FD_MANNO_TIMER], 1, p->logAnnounceInterval);
+	pr_debug("port_set_manno_tmo: FD_MANNO_TIMER");
+	return set_tmo_log(p->fda.fd[FD_MANNO_TIMER], 1, p->logAnnounceInterval, p->time_offset_ms);
 }
 
 int port_set_qualification_tmo(struct port *p)
 {
+	pr_debug("port_set_qualification_tmo: FD_QUALIFICATION_TIMER");
 	return set_tmo_log(p->fda.fd[FD_QUALIFICATION_TIMER],
-		       1+clock_steps_removed(p->clock), p->logAnnounceInterval);
+		       1+clock_steps_removed(p->clock), p->logAnnounceInterval, p->time_offset_ms);
 }
 
 int port_set_sync_rx_tmo(struct port *p)
 {
+	pr_debug("port_set_sync_rx_tmo: FD_SYNC_RX_TIMER");
 	return set_tmo_log(p->fda.fd[FD_SYNC_RX_TIMER],
-			   p->syncReceiptTimeout, p->logSyncInterval);
+			   p->syncReceiptTimeout, p->logSyncInterval, p->time_offset_ms);
 }
 
 static int port_set_sync_tx_tmo(struct port *p)
 {
-	return set_tmo_log(p->fda.fd[FD_SYNC_TX_TIMER], 1, p->logSyncInterval);
+	pr_debug("port_set_sync_tx_tmo: FD_SYNC_TX_TIMER");
+	return set_tmo_log(p->fda.fd[FD_SYNC_TX_TIMER], 1, p->logSyncInterval, p->time_offset_ms);
 }
 
 void port_show_transition(struct port *p, enum port_state next,
@@ -2009,6 +2047,8 @@ int port_initialize(struct port *p)
 	p->min_neighbor_prop_delay = config_get_int(cfg, p->name, "min_neighbor_prop_delay");
 	p->delay_response_timeout  = config_get_int(cfg, p->name, "delay_response_timeout");
 	p->iface_rate_tlv 	   = config_get_int(cfg, p->name, "interface_rate_tlv");
+
+	p->time_offset_ms      = config_get_int(cfg, p->name, "time_offset_ms");
 
 	if (config_get_int(cfg, p->name, "asCapable") == AS_CAPABLE_TRUE) {
 		p->asCapable = ALWAYS_CAPABLE;
@@ -2827,7 +2867,7 @@ static void port_e2e_transition(struct port *p, enum port_state next)
 	case PS_MASTER:
 	case PS_GRAND_MASTER:
 		if (!p->inhibit_announce) {
-			set_tmo_log(p->fda.fd[FD_MANNO_TIMER], 1, -10); /*~1ms*/
+			set_tmo_log(p->fda.fd[FD_MANNO_TIMER], 1, -10, 0); /*~1ms*/
 		}
 		port_set_sync_tx_tmo(p);
 		break;
@@ -2872,7 +2912,7 @@ static void port_p2p_transition(struct port *p, enum port_state next)
 	case PS_MASTER:
 	case PS_GRAND_MASTER:
 		if (!p->inhibit_announce) {
-			set_tmo_log(p->fda.fd[FD_MANNO_TIMER], 1, -10); /*~1ms*/
+			set_tmo_log(p->fda.fd[FD_MANNO_TIMER], 1, -10, 0); /*~1ms*/
 		}
 		port_set_sync_tx_tmo(p);
 		break;
@@ -3016,6 +3056,24 @@ static enum fsm_event bc_event(struct port *p, int fd_index)
 	enum fsm_event event = EV_NONE;
 	struct ptp_message *msg;
 	int cnt, fd = p->fda.fd[fd_index], err;
+
+	static const char* fd_names[] = {
+		"FD_EVENT",
+		"FD_GENERAL",
+		"FD_DELAY_TIMER",
+		"FD_ANNOUNCE_TIMER",
+		"FD_SYNC_RX_TIMER",
+		"FD_QUALIFICATION_TIMER",
+		"FD_MANNO_TIMER",
+		"FD_SYNC_TX_TIMER",
+		"FD_UNICAST_REQ_TIMER",
+		"FD_UNICAST_SRV_TIMER",
+		"FD_CMLDS",
+		"FD_RTNL",
+		"N_POLLFD"
+	};
+
+	pr_debug("%s: bc_event=%s. fd_index=%d", p->log_name, fd_names[fd_index], fd_index);
 
 	switch (fd_index) {
 	case FD_ANNOUNCE_TIMER:

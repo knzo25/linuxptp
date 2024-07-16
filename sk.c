@@ -417,6 +417,7 @@ static short sk_revents = POLLPRI;
 int sk_receive(int fd, void *buf, int buflen,
 	       struct address *addr, struct hw_timestamp *hwts, int flags)
 {
+	pr_debug("sk_receive: fd=%d, buflen=%d, flags=%d", fd, buflen, flags);
 	char control[256];
 	int cnt = 0, res = 0, level, type;
 	struct cmsghdr *cm;

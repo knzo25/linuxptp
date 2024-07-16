@@ -171,6 +171,9 @@ struct port {
 		struct pmc *pmc;
 		int port;
 	} cmlds;
+
+	// Hack to fix multi ptp
+	int time_offset_ms;
 };
 
 #define portnum(p) (p->portIdentity.portNumber)

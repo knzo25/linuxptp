@@ -527,7 +527,7 @@ void unicast_client_grant(struct port *p, struct ptp_message *m,
 int unicast_client_set_tmo(struct port *p)
 {
 	return set_tmo_log(p->fda.fd[FD_UNICAST_REQ_TIMER], 1,
-			   p->unicast_master_table->logQueryInterval);
+			   p->unicast_master_table->logQueryInterval, p->time_offset_ms);
 }
 
 void unicast_client_state_changed(struct port *p)
